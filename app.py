@@ -16,7 +16,7 @@ st.title("키워드 추천 및 분석하기")
 st.caption("Google Trends 실제 검색 데이터 기반 · 개인용 SEO 키워드 도구")
 
 # -----------------------------
-# ❌ 장소/시설성 키워드 제거
+# ❌ 제거할 장소/시설성 키워드
 # -----------------------------
 BLOCK_WORDS = [
     "주차", "위치", "운영", "운영시간", "입장", "입장료",
@@ -28,42 +28,37 @@ def is_valid_keyword(keyword: str) -> bool:
     return not any(bw in keyword for bw in BLOCK_WORDS)
 
 # -----------------------------
-# 🚨 고위험 키워드 사전 (Trends 차단 빈번)
+# 🚨 고위험 키워드 (Trends 차단 잦음)
 # -----------------------------
 HIGH_RISK_KEYWORDS = [
-    "김치", "여행", "보험", "다이어트", "주식",
-    "비트코인", "코로나", "환율", "부동산"
+    "김치", "여행", "보험", "다이어트",
+    "주식", "비트코인", "부동산", "환율"
 ]
 
 # -----------------------------
 # 🔍 입력 키워드 자동 분해
 # -----------------------------
 def split_keyword(keyword: str):
-    """
-    예:
-    김치 → ["김치", "김치 레시피", "김치 효능"]
-    파리 여행 → ["파리 여행", "파리 여행 코스", "파리 여행 일정"]
-    """
     base = keyword.strip()
-    parts = [base]
+    result = [base]
 
     if len(base.split()) == 1:
-        parts.extend([
+        result.extend([
             f"{base} 레시피",
             f"{base} 효능",
             f"{base} 방법"
         ])
     else:
-        parts.extend([
+        result.extend([
             f"{base} 일정",
             f"{base} 코스",
             f"{base} 비용"
         ])
 
-    return list(dict.fromkeys(parts))  # 중복 제거
+    return list(dict.fromkeys(result))
 
 # -----------------------------
-# Google Trends 분석 함수
+# Google Trends 분석 함수 (항상 동일한 타입 반환)
 # -----------------------------
 @st.cache_data(show_spinner=False, ttl=60 * 60)
 def analyze_with_trends(keyword: str):
@@ -86,24 +81,12 @@ def analyze_with_trends(keyword: str):
         related = pytrends.related_queries()
 
     except TooManyRequestsError:
-        return {
-            "status": "RATE_LIMIT",
-            "kw50": pd.DataFrame(),
-            "top10": pd.DataFrame()
-        }
+        return {"status": "RATE_LIMIT", "kw50": pd.DataFrame(), "top10": pd.DataFrame()}
     except Exception:
-        return {
-            "status": "ERROR",
-            "kw50": pd.DataFrame(),
-            "top10": pd.DataFrame()
-        }
+        return {"status": "ERROR", "kw50": pd.DataFrame(), "top10": pd.DataFrame()}
 
     if keyword not in related or related[keyword] is None:
-        return {
-            "status": "NO_DATA",
-            "kw50": pd.DataFrame(),
-            "top10": pd.DataFrame()
-        }
+        return {"status": "NO_DATA", "kw50": pd.DataFrame(), "top10": pd.DataFrame()}
 
     top_df = related[keyword].get("top")
     rising_df = related[keyword].get("rising")
@@ -115,11 +98,7 @@ def analyze_with_trends(keyword: str):
         frames.append(rising_df.assign(구분="급상승"))
 
     if not frames:
-        return {
-            "status": "NO_DATA",
-            "kw50": pd.DataFrame(),
-            "top10": pd.DataFrame()
-        }
+        return {"status": "NO_DATA", "kw50": pd.DataFrame(), "top10": pd.DataFrame()}
 
     df = (
         pd.concat(frames, ignore_index=True)
@@ -133,19 +112,14 @@ def analyze_with_trends(keyword: str):
     kw50 = df.head(50)[["키워드", "구분", "지표"]]
     top10 = df.sort_values("지표", ascending=False).head(10)[["키워드", "구분", "지표"]]
 
-    return {
-        "status": "OK",
-        "kw50": kw50,
-        "top10": top10
-    }
-
+    return {"status": "OK", "kw50": kw50, "top10": top10}
 
 # -----------------------------
 # UI
 # -----------------------------
 keyword = st.text_input(
     "분석할 키워드를 입력하세요",
-    placeholder="예: 김치 / 전주 덕진공원 / 파리 여행"
+    placeholder="예: 김치 / 진도 / 나고야 여행"
 )
 
 if st.button("🚀 키워드 추천 및 분석하기"):
@@ -153,38 +127,33 @@ if st.button("🚀 키워드 추천 및 분석하기"):
         st.warning("키워드를 입력해주세요.")
         st.stop()
 
-    # 🚨 고위험 키워드 사전 경고
     if keyword.strip() in HIGH_RISK_KEYWORDS:
         st.warning(
-            f"⚠ '{keyword}' 는 Google Trends 요청 제한이 잦은 고위험 키워드입니다.\n\n"
+            f"⚠ '{keyword}' 는 Google Trends 요청 제한이 잦은 고위험 키워드입니다.\n"
             "자동으로 세분화 키워드로 분석합니다."
         )
 
-    # 🔍 키워드 자동 분해
-    keywords_to_try = split_keyword(keyword)
+    keywords = split_keyword(keyword)
 
     all_kw50 = []
     all_top10 = []
 
     with st.spinner("Google Trends 실제 검색 데이터 분석 중..."):
-        for kw in keywords_to_try:
-           result = analyze_with_trends(kw)
+        for kw in keywords:
+            result = analyze_with_trends(kw)
 
-if result["status"] == "RATE_LIMIT":
-    st.warning(
-        f"⚠ '{kw}' 분석 중 Google Trends 요청 제한 발생\n"
-        "잠시 후 다시 시도하거나 더 구체적인 키워드를 입력하세요."
-    )
-    continue
+            if result["status"] == "RATE_LIMIT":
+                st.warning(f"⚠ '{kw}' 분석 중 요청 제한 발생 → 건너뜁니다.")
+                continue
 
-if result["status"] != "OK":
-    continue
+            if result["status"] != "OK":
+                continue
 
-all_kw50.append(result["kw50"].assign(기준키워드=kw))
-all_top10.append(result["top10"].assign(기준키워드=kw))
+            all_kw50.append(result["kw50"].assign(기준키워드=kw))
+            all_top10.append(result["top10"].assign(기준키워드=kw))
 
     if not all_kw50:
-        st.error("의미 있는 키워드를 가져오지 못했습니다.")
+        st.error("의미 있는 키워드를 불러오지 못했습니다.")
         st.stop()
 
     final_kw50 = pd.concat(all_kw50).drop_duplicates(subset=["키워드"])
@@ -195,9 +164,8 @@ all_top10.append(result["top10"].assign(기준키워드=kw))
         .head(10)
     )
 
-    st.subheader("1️⃣ 연관 키워드 50개 (자동 분해 + 필터 적용)")
+    st.subheader("1️⃣ 연관 키워드 50개")
     st.dataframe(final_kw50, use_container_width=True, height=300)
 
     st.subheader("2️⃣ SEO·클릭 최적 키워드 10개")
-    st.caption("실제 콘텐츠 제작에 바로 사용 가능")
     st.dataframe(final_top10, use_container_width=True, height=300)
