@@ -1,139 +1,160 @@
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
-import re
+from pytrends.request import TrendReq
+import itertools
+import random
 
-# ===============================
-# 기본 설정
-# ===============================
-st.set_page_config(page_title="키워드 추천 및 분석받기", layout="wide")
+st.set_page_config(page_title="키워드 추천 및 글 자동 생성기", layout="wide")
+
 st.title("키워드 추천 및 분석받기")
+st.caption("Google Trends + 자동 확장 키워드 기반")
 
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-
-# ===============================
-# 입력
-# ===============================
-keyword = st.text_input(
+base_keyword = st.text_input(
     "분석할 키워드를 입력해주세요 😊",
-    placeholder="예: 전주덕진공원 / 이천피에뜰 / 부산 송도 케이블카"
+    placeholder="예: 전주 덕진공원"
 )
 
-# ===============================
-# 키워드 강제 분해
-# ===============================
-def split_keyword(keyword):
-    keyword = keyword.strip()
-    parts = re.findall(r"[가-힣]+", keyword)
+# -------------------------------
+# 키워드 확장 로직 (핵심)
+# -------------------------------
+def expand_keywords(keyword):
+    suffixes = [
+        "연꽃", "연꽃 시즌", "개화 시기", "주차", "산책", "사진 명소",
+        "가볼만한곳", "데이트", "여행", "후기", "야경",
+        "운영시간", "입장료", "위치"
+    ]
+    expanded = [f"{keyword} {s}" for s in suffixes]
+    return expanded
 
-    expanded = set()
-    expanded.add(keyword)
+@st.cache_data(show_spinner=False)
+def analyze(keyword):
+    pytrends = TrendReq(hl="ko", tz=540)
 
-    for p in parts:
-        if len(p) >= 2:
-            expanded.add(p)
+    keywords_to_try = [keyword] + expand_keywords(keyword)
+    collected = []
 
-    if len(parts) >= 2:
-        expanded.add(" ".join(parts))
+    for kw in keywords_to_try:
+        try:
+            pytrends.build_payload([kw], timeframe="today 12-m", geo="KR")
+            related = pytrends.related_queries()
+            if kw in related and related[kw]:
+                rq = related[kw]
+                for k in ["top", "rising"]:
+                    if rq.get(k) is not None:
+                        collected += rq[k]["query"].tolist()
+        except:
+            continue
 
-    return list(expanded)
+    # 그래도 부족하면 강제 생성
+    if len(collected) < 20:
+        collected += expand_keywords(keyword)
 
-# ===============================
-# ChatGPT 기반 키워드 생성
-# ===============================
-def generate_keywords_with_gpt(base_keywords):
-    prompt = f"""
-아래 키워드를 기반으로
-네이버 검색 의도 + SEO 관점에서
-연관 키워드 30개를 생성하라.
+    collected = list(dict.fromkeys(collected))[:50]
 
-조건:
-- 검색어 형태 그대로
-- 지역 + 장소 + 정보형 조합
-- 후기, 힐링, 강추 같은 감성 단어 금지
-- 실제 블로그 제목에 쓸 수 있는 키워드
+    top10 = collected[:10]
 
-기본 키워드:
-{", ".join(base_keywords)}
+    return collected, top10
 
-출력은 키워드만 한 줄에 하나씩.
+# -------------------------------
+# 글 생성 함수 (지침서 반영)
+# -------------------------------
+def generate_article(main_kw, sub_kws):
+    title = f"{main_kw} 운영시간·주차·이용방법 총정리"
+
+    intro = f"""안녕하세요.
+오늘은 {main_kw}에 대해 처음 방문하는 분들을 위해 정리해봤어요.
+이 공간의 기본 정보와 이용 방법을 중심으로 설명할게요.
+운영시간, 주차, 동선까지 한 번에 확인할 수 있도록 구성했어요.
+처음 방문하신다면 끝까지 참고해보세요.
 """
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.4
-    )
+    body = f"""
+① 이곳은 무엇인가요  
+{main_kw}은 지역 내에서 대표적인 공간으로 알려져 있어요.  
+과거에는 단순한 휴식 공간으로 활용되었으며, 현재는 관광과 산책 목적의 장소로 이용되요.
 
-    keywords = response.choices[0].message.content.split("\n")
-    keywords = [k.strip("- ").strip() for k in keywords if k.strip()]
-    return keywords[:30]
+② 언제·어떻게 이용하나요  
+운영 요일과 시간은 계절에 따라 달라질 수 있어요.  
+방문 전 공식 안내를 확인하는 것이 좋아요.  
+※ 성수기에는 방문 시간이 집중될 수 있습니다.
 
-# ===============================
-# 글 자동 생성
-# ===============================
-def generate_article(main_keyword, sub_keywords):
-    prompt = f"""
-너는 네이버 SEO 정보형 블로그 글 작성 전문가다.
+③ 내부 구성·동선은 어떻게 되나요  
+입구를 기준으로 주요 동선이 이어지며 전체 관람에는 약 1~2시간이 소요됩니다.  
+사진 촬영은 오전 시간대가 적합할거같아요.
 
-아래 지침서를 반드시 지켜 글 전체를 완성하라.
+④ 주차·교통·접근성  
+주차장은 인근에 마련되어 있으며 도보 이동이 필요할 수 있어요.  
+대중교통 이용도 가능한 편입니다.
 
-[메인 키워드]
-{main_keyword}
-
-[서브 키워드]
-{", ".join(sub_keywords)}
-
-[구조]
-제목
-도입부
-① 이곳은 무엇인가요
-② 언제·어떻게 이용하나요
-③ 내부 구성·동선
-④ 주차·교통·접근성
-⑤ 이런 사람에게 맞아요
-마무리
-해시태그
-
-조건:
-- 감성 표현 금지
-- 후기, 강추, 힐링 금지
-- 처음 방문자 기준
-- 정보 우선
+⑤ 이런 사람에게 맞아요  
+조용히 산책하고 싶은 분  
+사진 촬영을 목적으로 방문하는 분  
+짧은 일정의 여행을 계획하는 분
 """
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
+    outro = f"""정리하자면 {main_kw}은 기본 정보만 알고 방문해도 충분히 즐길 수 있는 공간이에요.
+동선과 이용 조건을 미리 파악하면 일정 관리에 도움이 됩니다.
+방문을 계획 중이라면 한 번 참고해보셔도 좋을거 같아요.
+"""
+
+    hashtags = " ".join(
+        [f"#{main_kw.replace(' ', '')}"] +
+        [f"#{k.replace(' ', '')}" for k in sub_kws]
     )
 
-    return response.choices[0].message.content
+    return f"""
+📌 제목  
+{title}
 
-# ===============================
-# 실행
-# ===============================
+📌 도입부  
+{intro}
+
+📌 본문  
+{body}
+
+📌 마무리  
+{outro}
+
+📌 해시태그  
+{hashtags}
+"""
+
+# -------------------------------
+# 실행부
+# -------------------------------
 if st.button("키워드 추천 및 분석하기"):
-    if not keyword:
+    if not base_keyword:
         st.warning("키워드를 입력해주세요.")
     else:
         with st.spinner("키워드 분석 중입니다..."):
-            base_keywords = split_keyword(keyword)
-            all_keywords = generate_keywords_with_gpt(base_keywords)
+            all_kw, top10 = analyze(base_keyword)
 
-        st.subheader("1️⃣ 자동 생성된 연관 키워드")
+        st.subheader("1️⃣ 연관 키워드 50개")
+        st.dataframe(pd.DataFrame(
+            list(itertools.zip_longest(*[all_kw[i::5] for i in range(5)], fillvalue=""))
+        ))
+
+        st.subheader("2️⃣ 상위 노출 가능 키워드 10개")
+        top_df = pd.DataFrame({
+            "키워드": top10,
+            "검색 의도": ["정보형"] * len(top10)
+        })
+        st.dataframe(top_df)
+
+        st.subheader("3️⃣ 글 생성용 키워드 선택 (최대 3개)")
         selected = st.multiselect(
-            "최대 3개 선택하세요",
-            all_keywords,
+            "메인 키워드 1개 + 서브 키워드 선택",
+            options=top10,
             max_selections=3
         )
 
-        if st.button("선택한 키워드로 글 완성하기"):
+        if st.button("선택한 키워드로 글 자동 생성"):
             if not selected:
-                st.warning("키워드를 선택해주세요.")
+                st.warning("최소 1개 이상 선택해주세요.")
             else:
-                with st.spinner("글을 생성 중입니다..."):
-                    article = generate_article(selected[0], selected[1:])
+                main = selected[0]
+                subs = selected[1:]
+                article = generate_article(main, subs)
 
-                st.subheader("✍️ 자동 생성된 글")
-                st.write(article)
+                st.subheader("✏️ 지침서 기반 자동 생성 글")
+                st.text_area("복사해서 바로 사용하세요", article, height=600)
