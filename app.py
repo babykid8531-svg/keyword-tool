@@ -11,7 +11,7 @@ st.title("키워드 추천 및 분석받기")
 
 keyword = st.text_input(
     "분석할 키워드를 입력해주세요 😊",
-    placeholder="예: 전주 여행, 전주 가볼만한곳"
+    placeholder="예: 전주여행 가볼만한곳"
 )
 
 # -----------------------------
@@ -23,41 +23,68 @@ def make_grid(items, cols=5):
     return pd.DataFrame(grid).fillna("")
 
 # -----------------------------
-# Google Trends 분석 함수
+# fallback 키워드 생성기 (최후의 수단)
+# -----------------------------
+def generate_fallback(keyword):
+    base = keyword.replace("  ", " ").strip()
+    suffixes = [
+        "가볼만한곳", "여행", "관광지", "맛집", "데이트",
+        "코스", "추천", "후기", "사진", "명소"
+    ]
+    results = [f"{base} {s}" for s in suffixes]
+    return results[:10]
+
+# -----------------------------
+# Google Trends 분석 함수 (관대 버전)
 # -----------------------------
 @st.cache_data(show_spinner=False)
 def analyze(keyword):
-    try:
-        pytrends = TrendReq(hl='ko', tz=540)
-        pytrends.build_payload([keyword], timeframe='today 12-m', geo='KR')
+    pytrends = TrendReq(hl='ko', tz=540)
 
-        related = pytrends.related_queries()
+    def fetch(k):
+        try:
+            pytrends.build_payload([k], timeframe='today 12-m', geo='KR')
+            related = pytrends.related_queries()
+            rq = related.get(k)
 
-        if keyword not in related or related[keyword] is None:
-            return [], []
+            if rq is None:
+                return []
 
-        rq = related[keyword]
-        frames = []
+            frames = []
+            if rq.get('top') is not None:
+                frames.append(rq.get('top'))
+            if rq.get('rising') is not None:
+                frames.append(rq.get('rising'))
 
-        if rq.get('top') is not None:
-            frames.append(rq.get('top'))
+            if not frames:
+                return []
 
-        if rq.get('rising') is not None:
-            frames.append(rq.get('rising'))
+            df = pd.concat(frames, ignore_index=True)
+            return df['query'].drop_duplicates().tolist()
+        except Exception:
+            return []
 
-        if not frames:
-            return [], []
+    # 1️⃣ 원본 키워드
+    keywords = fetch(keyword)
 
-        df = pd.concat(frames, ignore_index=True)
-        df = df.drop_duplicates(subset='query').head(50)
+    # 2️⃣ 띄어쓰기 분해
+    if not keywords and " " in keyword:
+        for part in keyword.split():
+            keywords.extend(fetch(part))
 
-        keywords = df['query'].tolist()
-        top10 = keywords[:10]
+    # 3️⃣ 지역/여행 자동 보정
+    if not keywords:
+        for extra in ["여행", "가볼만한곳", "관광"]:
+            keywords.extend(fetch(f"{keyword} {extra}"))
 
-        return keywords, top10
+    # 4️⃣ 그래도 없으면 fallback 생성
+    if not keywords:
+        keywords = generate_fallback(keyword)
 
-    except Exception:
-        return [], []
+    keywords = list(dict.fromkeys(keywords))[:50]
+    top10 = keywords[:10]
+
+    return keywords, top10
 
 # -----------------------------
 # 버튼 클릭 시 실행
@@ -66,14 +93,11 @@ if st.button("키워드 추천 및 분석하기"):
     if not keyword:
         st.warning("키워드를 입력해주세요.")
     else:
-        with st.spinner("Google Trends 기반 분석 중입니다..."):
+        with st.spinner("키워드 분석 중입니다..."):
             all_kw, top10 = analyze(keyword)
 
-        if not all_kw:
-            st.info("연관 키워드 데이터가 충분하지 않습니다. 조금 더 일반적인 키워드로 시도해보세요.")
-        else:
-            st.subheader("1️⃣ 연관 키워드 50개")
-            st.dataframe(make_grid(all_kw))
+        st.subheader("1️⃣ 연관 키워드 추천")
+        st.dataframe(make_grid(all_kw))
 
-            st.subheader("2️⃣ 상위 노출 가능 키워드 10개")
-            st.dataframe(pd.DataFrame(top10, columns=["키워드"]))
+        st.subheader("2️⃣ 상위 활용 추천 키워드")
+        st.dataframe(pd.DataFrame(top10, columns=["키워드"]))
