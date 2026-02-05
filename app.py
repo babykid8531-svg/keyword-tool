@@ -1,122 +1,102 @@
 import streamlit as st
 import pandas as pd
+from pytrends.request import TrendReq
 
-st.set_page_config(page_title="키워드 추천 및 분석받기", layout="wide")
+# -----------------------------
+# 기본 설정
+# -----------------------------
+st.set_page_config(
+    page_title="Google Trends 기반 키워드 분석",
+    layout="wide"
+)
+
 st.title("키워드 추천 및 분석받기")
-st.caption("Google Trends · 네이버 검색 의도 기반 실전 SEO 도구")
+st.caption("Google Trends 실제 검색 데이터 기반 · 개인용 SEO 키워드 도구")
 
 # -----------------------------
-# 핵심 로직
+# Google Trends 분석 함수
 # -----------------------------
-def analyze_all(base):
-    # 네이버/구글에서 실제로 붙는 검색 의도 기반 확장
-    suffixes = [
-        "주차","위치","가는법","운영시간","이용시간","입장료","요금",
-        "산책","사진 명소","데이트","가볼만한곳","코스","야경",
-        "계절","시즌","개화 시기","혼잡도","아이와","가족",
-        "주말","평일","근처 맛집","근처 카페","지도","후기"
-    ]
+@st.cache_data(show_spinner=False)
+def analyze_with_trends(keyword: str):
+    pytrends = TrendReq(hl="ko-KR", tz=540)
 
-    rows = []
-    for s in suffixes:
-        kw = f"{base} {s}"
-        seo = 0
-        click = 0
-        ai = 0
+    # 최근 12개월, 한국 기준
+    pytrends.build_payload(
+        kw_list=[keyword],
+        timeframe="today 12-m",
+        geo="KR"
+    )
 
-        # SEO 점수
-        if s in ["주차","위치","가는법","운영시간","입장료"]:
-            seo += 40
-        if len(kw) >= 10:
-            seo += 20
+    related = pytrends.related_queries()
 
-        # 클릭 유도
-        if s in ["사진 명소","데이트","가볼만한곳","코스","야경"]:
-            click += 30
+    if keyword not in related or related[keyword] is None:
+        return pd.DataFrame(), pd.DataFrame()
 
-        # AI 검색 친화
-        if s in ["시즌","개화 시기","혼잡도","아이와","가족"]:
-            ai += 30
+    top_df = related[keyword].get("top")
+    rising_df = related[keyword].get("rising")
 
-        total = seo + click + ai
-        rows.append({
-            "키워드": kw,
-            "SEO 점수": seo,
-            "클릭 점수": click,
-            "AI 검색 점수": ai,
-            "종합 점수": total
-        })
+    frames = []
+    if top_df is not None:
+        frames.append(top_df.assign(구분="상위"))
+    if rising_df is not None:
+        frames.append(rising_df.assign(구분="급상승"))
 
-    df = pd.DataFrame(rows).sort_values("종합 점수", ascending=False)
+    if not frames:
+        return pd.DataFrame(), pd.DataFrame()
 
-    top10 = df.head(10)
+    df = pd.concat(frames, ignore_index=True)
 
-    titles = [
-        f"{base} 주차·운영시간·위치 총정리",
-        f"{base} 가는법·이용방법 한눈 정리",
-        f"{base} 사진 명소·산책 코스 정리",
-        f"{base} 시즌·혼잡도 방문 전 체크",
-        f"{base} 아이와·가족 방문 정보 정리"
-    ]
+    # 정리
+    df = (
+        df.rename(columns={"query": "키워드", "value": "지표"})
+        .drop_duplicates(subset="키워드")
+        .reset_index(drop=True)
+    )
 
-    prompt = f"""
-너는 네이버 블로그 전문 작가다.
-아래 지침서를 절대 어기지 말고 글을 작성해라.
+    # 1️⃣ 연관 키워드 50개
+    kw50 = df.head(50)[["키워드", "구분", "지표"]]
 
-[주제]
-{base}
+    # 2️⃣ SEO·클릭 최적 키워드 10개 (지표 높은 순)
+    top10 = df.sort_values("지표", ascending=False).head(10)[["키워드", "구분", "지표"]]
 
-[핵심 키워드]
-{top10.iloc[0]['키워드']}
-{top10.iloc[1]['키워드']}
-{top10.iloc[2]['키워드']}
-
-[글 구조 – 고정]
-제목
-도입부(4~5줄)
-
-① 이 공간/장소는 무엇인가요
-② 언제·어떻게 이용하나요 (시간·요일·조건)
-③ 내부 구성·이용 흐름·동선
-④ 주차·교통·접근성
-⑤ 이런 사람에게 잘 맞아요
-
-마무리(3문장)
-해시태그 7~10개
-
-[작성 규칙]
-- 정보 우선, 감정 최소
-- 처음 방문자 기준
-- 후기·과장·감성 표현 금지
-- 네이버 블로그용 자연스러운 설명체
-"""
-
-    return df.head(50), top10, titles, prompt
+    return kw50, top10
 
 
 # -----------------------------
 # UI
 # -----------------------------
-base_kw = st.text_input(
+keyword = st.text_input(
     "분석할 키워드를 입력하세요",
-    placeholder="전주 덕진공원"
+    placeholder="예: 전주 덕진공원 / 김치 / 파리 여행"
 )
 
-if st.button("🚀 키워드 분석 한 번에 실행"):
-    if not base_kw.strip():
+if st.button("🚀 키워드 추천 및 분석하기"):
+    if not keyword.strip():
         st.warning("키워드를 입력해주세요.")
     else:
-        kw50, top10, titles, prompt = analyze_all(base_kw.strip())
+        with st.spinner("Google Trends 실제 검색 데이터 분석 중..."):
+            kw50, top10 = analyze_with_trends(keyword.strip())
 
-        st.subheader("1️⃣ 연관 키워드 50개 (Google·네이버 검색 의도 기반)")
-        st.dataframe(kw50, height=260, use_container_width=True)
+        if kw50.empty:
+            st.error("해당 키워드는 Google Trends에서 충분한 검색 데이터가 없습니다.")
+        else:
+            # -----------------------------
+            # 1️⃣ 연관 키워드 50개
+            # -----------------------------
+            st.subheader("1️⃣ 연관 키워드 50개 (Google Trends 실제 검색)")
+            st.dataframe(
+                kw50,
+                use_container_width=True,
+                height=260
+            )
 
-        st.subheader("2️⃣ SEO·클릭·AI 검색 최적 키워드 10개")
-        st.dataframe(top10, height=260, use_container_width=True)
-
-        st.subheader("3️⃣ 네이버 블로그 제목 추천 5개")
-        for t in titles:
-            st.write("•", t)
-
-        st.subheader("4️⃣ 지침서 기반 글 생성용 완성 프롬프트")
-        st.code(prompt)
+            # -----------------------------
+            # 2️⃣ SEO·클릭 최적 키워드 10개
+            # -----------------------------
+            st.subheader("2️⃣ SEO·클릭·AI 검색 최적 키워드 10개")
+            st.caption("검색 지표 기준 상위 키워드")
+            st.dataframe(
+                top10,
+                use_container_width=True,
+                height=260
+            )
