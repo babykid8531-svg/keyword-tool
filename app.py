@@ -154,14 +154,22 @@ if st.session_state.run_generate:
 - 추상적 표현
 """
 
-        res = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-            max_output_tokens=1200
-        )
-
-        st.session_state.post_text = res.output_text
-        st.session_state.run_generate = False
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "너는 네이버 블로그 전문 SEO 작가다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=1200,
+                temperature=0.7
+            )
+            
+            st.session_state.post_text = response.choices[0].message.content
+            st.session_state.run_generate = False
+        except Exception as e:
+            st.error(f"글 생성 중 오류가 발생했습니다: {str(e)}")
+            st.session_state.run_generate = False
 
 # =====================
 # 결과 출력
