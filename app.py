@@ -1,20 +1,17 @@
 import streamlit as st
-import pandas as pd
-import time
-import json
-from pytrends.request import TrendReq
 from openai import OpenAI
+import json
 
 # -----------------------------
 # 기본 설정
 # -----------------------------
 st.set_page_config(
-    page_title="키워드 추천 및 네이버 글 자동 생성",
+    page_title="SEO 키워드 분석 & 네이버 글 자동 생성",
     layout="wide"
 )
 
 st.title("키워드 추천 및 분석받기")
-st.caption("Google Trends 기반 분석 + GPT 백업 + 네이버 블로그 글 자동 생성")
+st.caption("네이버 SEO 실전용 · 키워드 → 글 자동 완성")
 
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
@@ -24,164 +21,67 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 GUIDELINE = """
 너는 네이버 블로그 전문 작가이자 SEO 컨설턴트다.
 
-[절대 원칙]
-- 구조는 항상 동일하게 유지한다.
-- 정보가 감정보다 먼저다.
-- 독자는 처음 방문하는 사람이다.
+[대원칙]
+- 구조는 항상 동일
+- 정보가 감정보다 먼저
+- 독자는 처음 방문하는 사람
 
-[고정 구조]
-
+[구조]
 제목
-도입부(인사 + 요약)
+도입부
 
-① 이 공간/장소/서비스는 무엇인가요
-② 언제·어떻게 이용하나요 (시간·요일·조건)
-③ 내부 구성·이용 흐름·동선은 어떻게 되나요
-④ 접근 방법·주차·교통은 어떤가요
-⑤ 이런 사람에게 잘 맞아요
+① 이곳은 무엇인가요
+② 언제·어떻게 이용하나요
+③ 내부 구성·동선
+④ 주차·교통·접근성
+⑤ 이런 사람에게 맞아요
 
 마무리
 해시태그
 
-[제목 규칙]
-- 지역 + 대상명 + 핵심 정보 2~3개 + 총정리
-- 감성, 후기, 추상 표현 금지
-
-[도입부]
-- 4~5줄 고정
-- 감정·후기 표현 금지
-
-[본문]
-- 설명 → 배경 → 현재
-- 숫자·연도·사실 우선
-- 각 파트 마지막에 실전 팁 1줄
-
-[마무리]
-- 3문장
-- 질문형 1문장까지 허용
-
-[해시태그]
-- 7~10개
-- 정보형 키워드만 사용
+[제목]
+지역 + 대상 + 정보 키워드 2~3개 + 총정리
+감성·후기 금지
 """
 
 # -----------------------------
-# 1. Google Trends 시도
+# GPT 단일 호출 (핵심)
 # -----------------------------
-@st.cache_data(ttl=60 * 60)
-def fetch_from_trends(base_keyword):
-    time.sleep(2)  # 중요: 차단 방지
-    pytrends = TrendReq(hl="ko-KR", tz=540)
-    pytrends.build_payload(
-        kw_list=[base_keyword],
-        timeframe="today 12-m",
-        geo="KR"
-    )
-
-    related = pytrends.related_queries()
-    if base_keyword not in related or related[base_keyword] is None:
-        return []
-
-    top = related[base_keyword].get("top", pd.DataFrame())
-    rising = related[base_keyword].get("rising", pd.DataFrame())
-
-    df = pd.concat([top, rising], ignore_index=True)
-    if "query" not in df:
-        return []
-
-    return df["query"].drop_duplicates().tolist()
-
-# -----------------------------
-# 2. GPT 백업 키워드 생성
-# -----------------------------
-def fallback_keywords_with_gpt(base_keyword):
+def generate_all(base_keyword):
     prompt = f"""
-'{base_keyword}'를 네이버 검색창에 실제 사람이 입력할 법한
-연관 키워드 50개를 만들어라.
+'{base_keyword}'를 기준으로
+네이버 블로그 실사용 기준으로 아래를 모두 생성해라.
 
-조건:
-- 지역명 + 구체적 의도
-- 정보형 위주
-- 여행, 후기 같은 추상 단어 남발 금지
+1️⃣ 연관 키워드 50개
+- 실제 검색자가 입력할 법한 형태
+- 지역 + 구체적 의도
 
-JSON 배열만 반환해라.
-"""
+2️⃣ 상위 노출 가능 키워드 10개
+- 키워드
+- 검색량 (높음/중상/중)
+- 이유
 
-    res = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-    )
+3️⃣ 위 10개 중 SEO·AI 검색·클릭률 기준 TOP3 자동 선정
+- 메인 1
+- 정보형 1
+- 롱테일 1
 
-    return json.loads(res.choices[0].message.content)
-
-# -----------------------------
-# 3. 키워드 분석 + TOP3 선정
-# -----------------------------
-def analyze_keywords(base_keyword):
-    try:
-        keywords = fetch_from_trends(base_keyword)
-    except:
-        keywords = []
-
-    if not keywords:
-        keywords = fallback_keywords_with_gpt(base_keyword)
-
-    keywords = keywords[:50]
-
-    prompt = f"""
-다음 키워드 목록을 보고,
-네이버 블로그 상위 노출 가능성이 높은 키워드 10개를 뽑아라.
-
-기준:
-- 검색 의도 명확
-- 경쟁도 과도하지 않음
-- 정보형 위주
-
-그중에서
-1) 메인 키워드
-2) 정보형 키워드
-3) 롱테일 키워드
-각 1개씩 총 3개를 자동 선정해라.
-
-출력 JSON 형식:
-{{
- "top10": [
-   {{"keyword":"", "volume":"높음/중상/중", "reason":""}}
- ],
- "top3": ["", "", ""]
-}}
-"""
-
-    res = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": "SEO 키워드 분석가다. JSON만 출력해라."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.4,
-    )
-
-    data = json.loads(res.choices[0].message.content)
-    return keywords, pd.DataFrame(data["top10"]), data["top3"]
-
-# -----------------------------
-# 4. 네이버 블로그 글 생성
-# -----------------------------
-def generate_post(base_keyword, top3):
-    k1, k2, k3 = top3
-
-    prompt = f"""
-기본 키워드: {base_keyword}
-메인 키워드: {k1}
-정보형 키워드: {k2}
-롱테일 키워드: {k3}
-
-- 네이버 블로그용
+4️⃣ 선정된 TOP3으로 네이버 블로그 글 전체 작성
 - 지침서 구조 100% 준수
-- 담백한 설명형 문체
+- 정보형 문체
 - HTML 금지
-- 해시태그는 쉼표로만 구분
+- 해시태그는 쉼표로 구분
+
+출력은 반드시 JSON 형식:
+
+{{
+ "keywords50": [...],
+ "top10": [
+   {{"keyword":"","volume":"","reason":""}}
+ ],
+ "top3": ["","",""],
+ "post": "완성된 글 전체"
+}}
 """
 
     res = client.chat.completions.create(
@@ -190,10 +90,10 @@ def generate_post(base_keyword, top3):
             {"role": "system", "content": GUIDELINE},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.6,
+        temperature=0.4
     )
 
-    return res.choices[0].message.content.strip()
+    return json.loads(res.choices[0].message.content)
 
 # -----------------------------
 # UI
@@ -203,29 +103,23 @@ base_kw = st.text_input(
     placeholder="예: 전주 덕진공원"
 )
 
-if st.button("키워드 분석"):
+if st.button("키워드 분석 + 글 생성"):
     if not base_kw.strip():
         st.warning("키워드를 입력하세요.")
     else:
-        with st.spinner("키워드 분석 중..."):
-            kw50, top10_df, top3 = analyze_keywords(base_kw.strip())
+        with st.spinner("SEO 분석 및 글 생성 중..."):
+            data = generate_all(base_kw.strip())
 
         st.markdown("### 1️⃣ 연관 키워드 50개")
         cols = 5
-        rows = [kw50[i:i+cols] for i in range(0, len(kw50), cols)]
-        st.dataframe(pd.DataFrame(rows))
+        rows = [data["keywords50"][i:i+cols] for i in range(0, 50, cols)]
+        st.dataframe(rows)
 
         st.markdown("### 2️⃣ 상위 노출 가능 키워드 10개")
-        st.dataframe(top10_df)
+        st.dataframe(data["top10"])
 
-        st.markdown("### 3️⃣ 자동 선정 핵심 키워드 3개")
-        st.write(f"- 메인: **{top3[0]}**")
-        st.write(f"- 정보형: **{top3[1]}**")
-        st.write(f"- 롱테일: **{top3[2]}**")
+        st.markdown("### 3️⃣ 자동 선정 TOP3 키워드")
+        st.write(data["top3"])
 
-        if st.button("네이버 블로그 글 자동 생성"):
-            with st.spinner("글 작성 중..."):
-                post = generate_post(base_kw.strip(), top3)
-
-            st.markdown("## ✏️ 네이버 블로그 자동 완성 글")
-            st.markdown(post)
+        st.markdown("## ✏️ 네이버 블로그 완성 글")
+        st.markdown(data["post"])
