@@ -100,7 +100,7 @@ GUIDELINE = """
 """
 
 # -----------------------------
-# 공통: GPT 호출 유틸 (RateLimit 방어)
+# GPT 호출 유틸 (RateLimit 방어용)
 # -----------------------------
 def call_gpt_json(system_msg: str, user_msg: str, max_retries: int = 3):
     last_err = None
@@ -118,7 +118,6 @@ def call_gpt_json(system_msg: str, user_msg: str, max_retries: int = 3):
             return json.loads(content)
         except openai.RateLimitError as e:
             last_err = e
-            # 살짝 쉬었다가 재시도 (내부 대기, 화면엔 안 보임)
             time.sleep(1.5 * (i + 1))
         except json.JSONDecodeError as e:
             last_err = e
@@ -145,15 +144,14 @@ def call_gpt_text(system_msg: str, user_msg: str, max_retries: int = 3) -> str:
     raise last_err
 
 # -----------------------------
-# 1단계: 키워드 분석 (GPT 기반)
+# 1단계: 키워드 분석 (연관 50개 + 상위 10개)
 # -----------------------------
 def analyze_keywords(base_keyword: str):
     """
     base_keyword 하나를 받아서
-    - 연관 키워드 50개
-    - 상위 노출 가능 키워드 10개 (검색량·이유)
-    - 그 중에서 자동 선정한 TOP3
-    를 모두 반환.
+    - 연관 키워드 50개 (격자)
+    - 상위 노출 가능 키워드 10개 (키워드/검색량/이유)
+    를 반환.
     """
 
     user_prompt = f"""
@@ -162,7 +160,7 @@ def analyze_keywords(base_keyword: str):
 [입력 키워드]
 {base_keyword}
 
-Google Trends 검색 패턴과 네이버 검색 의도를 함께 고려한다고 가정하고 아래를 생성해라.
+Google Trends 패턴과 네이버 검색 의도를 함께 고려한다고 가정하고 아래를 생성해라.
 
 1단계: 이 키워드를 중심으로, 실제 사용자가 검색할 법한 연관 키워드 50개를 만든다.
 - "지역명 + 구체적 의도" 형태 위주 (예: 전주 덕진공원 연꽃 시즌, 전주 덕진공원 사진 명소)
@@ -175,11 +173,6 @@ Google Trends 검색 패턴과 네이버 검색 의도를 함께 고려한다고
 - reason : 왜 좋은지 한 줄로 설명
 을 만든다.
 
-3단계: 위 10개 중에서 블로그 본문에 메인으로 쓸 핵심 키워드 3개를 자동으로 선정한다.
-- 1개는 메인 키워드 (가장 대표적인 검색어)
-- 1개는 정보형 키워드 (운영시간·요금·이용방법 등 정보 의도)
-- 1개는 롱테일 키워드 (후기·코스·사진명소 등 행동 의도)
-
 출력은 반드시 아래 JSON 형식으로만 작성해라.
 
 {{
@@ -187,8 +180,7 @@ Google Trends 검색 패턴과 네이버 검색 의도를 함께 고려한다고
   "top10": [
     {{"keyword": "키워드A", "volume": "높음", "reason": "이유"}},
     ...
-  ],
-  "top3": ["메인키워드", "정보형키워드", "롱테일키워드"]
+  ]
 }}
 """
 
@@ -202,40 +194,56 @@ Google Trends 검색 패턴과 네이버 검색 의도를 함께 고려한다고
     while len(kw50) < 50:
         kw50.append("")
     cols = 5
-    grid = [kw50[i : i + cols] for i in range(0, 50, cols)]
+    grid = [kw50[i: i + cols] for i in range(0, 50, cols)]
     kw_table = pd.DataFrame(grid, columns=[f"{i}" for i in range(1, cols + 1)])
 
     # 상위 10개
-    top10_df = pd.DataFrame(data.get("top10", []))
+    top10_raw = data.get("top10", [])
+    top10_df = pd.DataFrame(top10_raw)
+    if not top10_df.empty:
+        top10_df = top10_df.rename(
+            columns={
+                "keyword": "키워드",
+                "volume": "검색량",
+                "reason": "이유",
+            }
+        )
 
-    # TOP3
-    top3 = data.get("top3", [])[:3]
-
-    return kw_table, top10_df, top3
+    return kw_table, top10_df
 
 # -----------------------------
-# 2단계: TOP3 키워드로 네이버 글 생성
+# 2단계: 선택한 키워드로 네이버 글 생성
 # -----------------------------
-def generate_post(base_keyword: str, top3_keywords: list[str]) -> str:
-    if len(top3_keywords) < 3:
-        raise ValueError("top3 키워드가 부족합니다.")
+def generate_post(base_keyword: str, selected_keywords: list[str]) -> str:
+    """
+    사용자가 1~3개 직접 고른 키워드로 글 생성.
+    첫 번째는 메인, 두 번째는 정보형, 세 번째는 롱테일이라고 간주해서 설명해 달라고 지시.
+    """
 
-    kw_main, kw_info, kw_long = top3_keywords[:3]
+    if len(selected_keywords) == 0:
+        raise ValueError("최소 1개 이상의 키워드를 선택해야 합니다.")
+
+    # 안전하게 길이에 따라 메인/정보형/롱테일 라벨링
+    kw_main = selected_keywords[0]
+    kw_info = selected_keywords[1] if len(selected_keywords) >= 2 else selected_keywords[0]
+    kw_long = selected_keywords[2] if len(selected_keywords) >= 3 else selected_keywords[-1]
 
     user_prompt = f"""
 [블로그 글 작성 요청]
 
 - 기본 주제 키워드: {base_keyword}
-- 자동 선정된 핵심 키워드 3개:
+- 사용자가 직접 선택한 핵심 키워드 목록: {selected_keywords}
+- 이 중에서
   1) 메인 키워드: {kw_main}
   2) 정보형 키워드: {kw_info}
   3) 롱테일 키워드: {kw_long}
+  로 간주하고 글을 작성해라.
 
 요청사항:
 - 네이버 블로그에 그대로 붙여넣어 쓸 수 있는 글로 작성한다.
 - 말투는 '~했어요', '~입니다' 위주의 담백한 1인칭 설명형.
 - 제목, 도입부, ①~⑤, 마무리, 해시태그까지 지침서 구조를 정확히 지킨다.
-- 세 키워드를 제목·본문·해시태그에 자연스럽게 섞어서 넣는다.
+- 선택된 키워드들을 제목·본문·해시태그에 자연스럽게 섞어서 넣는다.
 - 해시태그는 # 없이, 쉼표로만 구분해 한 줄에 적는다.
 - HTML 태그는 사용하지 말고, 순수 텍스트/마크다운으로만 작성한다.
 """
@@ -247,19 +255,19 @@ def generate_post(base_keyword: str, top3_keywords: list[str]) -> str:
     return text
 
 # -----------------------------
-# 세션 상태 초기화
+# 세션 상태
 # -----------------------------
 if "kw_table" not in st.session_state:
     st.session_state.kw_table = None
 if "top10_df" not in st.session_state:
     st.session_state.top10_df = None
-if "top3" not in st.session_state:
-    st.session_state.top3 = None
 if "base_keyword" not in st.session_state:
     st.session_state.base_keyword = ""
+if "selected_keywords" not in st.session_state:
+    st.session_state.selected_keywords = []
 
 # -----------------------------
-# 화면 구성
+# 화면 상단: 키워드 입력 + 분석 버튼
 # -----------------------------
 base_kw = st.text_input(
     "분석할 키워드를 입력해주세요 😊",
@@ -267,56 +275,88 @@ base_kw = st.text_input(
     value=st.session_state.base_keyword,
 )
 
-col1, col2 = st.columns([1, 4])
-with col1:
+col_btn, _ = st.columns([1, 5])
+with col_btn:
     analyze_clicked = st.button("키워드 분석")
 
-# 1단계: 키워드 분석 버튼
+# 분석 버튼 눌렀을 때
 if analyze_clicked:
     if not base_kw.strip():
         st.warning("키워드를 먼저 입력해주세요.")
     else:
         try:
             with st.spinner("키워드 분석 중입니다..."):
-                kw_table, top10_df, top3 = analyze_keywords(base_kw.strip())
+                kw_table, top10_df = analyze_keywords(base_kw.strip())
 
+            st.session_state.base_keyword = base_kw.strip()
             st.session_state.kw_table = kw_table
             st.session_state.top10_df = top10_df
-            st.session_state.top3 = top3
-            st.session_state.base_keyword = base_kw.strip()
+            st.session_state.selected_keywords = []
 
         except openai.RateLimitError:
-            st.error("OpenAI 요청이 너무 많이 몰려서 제한이 걸렸어요. 버튼을 조금 간격을 두고 눌러줘야 해요.")
+            st.error("OpenAI 요청이 너무 많이 몰려서 제한이 걸렸어요. 같은 키워드로 연속 클릭을 줄이고, 잠깐 뒤에 다시 시도해줘야 해요.")
         except Exception as e:
             st.error(f"키워드 분석 중 오류가 발생했어요: {e}")
 
-# 1, 2, 3번 영역 표시
+# -----------------------------
+# 1️⃣ 연관 키워드 50개
+# -----------------------------
 if st.session_state.kw_table is not None:
-    st.markdown("### 1️⃣ 연관 키워드 50개")
+    st.markdown("### 1️⃣ 연관 키워드 50개 생성")
     st.caption("정렬 기준: 주제 연관성 + 검색 의도")
-    st.dataframe(st.session_state.kw_table, use_container_width=True)
+    st.dataframe(
+        st.session_state.kw_table,
+        use_container_width=True,
+        hide_index=True,
+    )
 
-if st.session_state.top10_df is not None:
+# -----------------------------
+# 2️⃣ 상위 노출 가능 키워드 10개
+# -----------------------------
+if st.session_state.top10_df is not None and not st.session_state.top10_df.empty:
     st.markdown("### 2️⃣ 상위 노출 가능성이 높은 키워드 10개")
-    st.dataframe(st.session_state.top10_df, use_container_width=True)
+    st.dataframe(
+        st.session_state.top10_df,
+        use_container_width=True,
+        hide_index=True,
+    )
 
-if st.session_state.top3 is not None and len(st.session_state.top3) == 3:
-    k1, k2, k3 = st.session_state.top3
-    st.markdown("### 3️⃣ 글 생성용 핵심 키워드 3개 (자동 선정)")
-    st.write(f"- ① 메인 키워드: **{k1}**")
-    st.write(f"- ② 정보형 키워드: **{k2}**")
-    st.write(f"- ③ 롱테일 키워드: **{k3}**")
-    st.info("이 세 개를 조합해서 네이버용 본문을 자동으로 생성합니다.")
+# -----------------------------
+# 3️⃣ 글 생성용 키워드 선택 + 글 생성
+# -----------------------------
+if st.session_state.top10_df is not None and not st.session_state.top10_df.empty:
+    st.markdown("### 3️⃣ 글 생성용 키워드 선택 (최대 3개)")
 
-    if st.button("이 TOP3로 네이버 블로그 글 생성"):
-        try:
-            with st.spinner("네이버 블로그용 글을 생성하는 중입니다..."):
-                post = generate_post(st.session_state.base_keyword, st.session_state.top3)
-            st.markdown("## ✏️ 지침서 기반 완성 글")
-            st.markdown(post)
-        except openai.RateLimitError:
-            st.error("OpenAI 요청 제한 때문에 글 생성에 실패했어요. 다시 한 번 시도할 수 있어요.")
-        except Exception as e:
-            st.error(f"글 생성 중 오류가 발생했어요: {e}")
+    options = st.session_state.top10_df["키워드"].tolist()
+
+    selected = st.multiselect(
+        "글에 반영할 키워드를 골라주세요 (최대 3개)",
+        options=options,
+        default=st.session_state.selected_keywords,
+    )
+
+    # 최대 3개 제한
+    if len(selected) > 3:
+        st.warning("최대 3개까지만 선택할 수 있어요. 앞의 3개만 사용됩니다.")
+        selected = selected[:3]
+
+    st.session_state.selected_keywords = selected
+
+    if st.button("선택한 키워드로 네이버 블로그 글 자동 생성"):
+        if len(selected) == 0:
+            st.warning("최소 1개 이상 선택해야 글을 만들 수 있어요.")
+        else:
+            try:
+                with st.spinner("네이버 블로그용 글을 생성하는 중입니다..."):
+                    post = generate_post(
+                        st.session_state.base_keyword,
+                        selected,
+                    )
+                st.markdown("## ✏️ 지침서 기반 완성 글")
+                st.markdown(post)
+            except openai.RateLimitError:
+                st.error("OpenAI 요청 제한 때문에 글 생성에 실패했어요. 조금 뒤에 다시 눌러줘야 해요.")
+            except Exception as e:
+                st.error(f"글 생성 중 오류가 발생했어요: {e}")
 else:
-    st.caption("키워드 분석을 먼저 실행하면 TOP3 키워드와 글 생성 버튼이 나타납니다.")
+    st.caption("키워드 분석을 먼저 실행하면 1·2번 표와 3번 선택 영역이 나타납니다.")
