@@ -82,16 +82,28 @@ def analyze_with_trends(keyword: str):
             geo="KR"
         )
 
-        time.sleep(2)  # ⏱ 요청 간 딜레이
+        time.sleep(2)
         related = pytrends.related_queries()
 
     except TooManyRequestsError:
-        return "RATE_LIMIT", "RATE_LIMIT"
+        return {
+            "status": "RATE_LIMIT",
+            "kw50": pd.DataFrame(),
+            "top10": pd.DataFrame()
+        }
     except Exception:
-        return pd.DataFrame(), pd.DataFrame()
+        return {
+            "status": "ERROR",
+            "kw50": pd.DataFrame(),
+            "top10": pd.DataFrame()
+        }
 
     if keyword not in related or related[keyword] is None:
-        return pd.DataFrame(), pd.DataFrame()
+        return {
+            "status": "NO_DATA",
+            "kw50": pd.DataFrame(),
+            "top10": pd.DataFrame()
+        }
 
     top_df = related[keyword].get("top")
     rising_df = related[keyword].get("rising")
@@ -103,7 +115,11 @@ def analyze_with_trends(keyword: str):
         frames.append(rising_df.assign(구분="급상승"))
 
     if not frames:
-        return pd.DataFrame(), pd.DataFrame()
+        return {
+            "status": "NO_DATA",
+            "kw50": pd.DataFrame(),
+            "top10": pd.DataFrame()
+        }
 
     df = (
         pd.concat(frames, ignore_index=True)
@@ -112,13 +128,17 @@ def analyze_with_trends(keyword: str):
         .reset_index(drop=True)
     )
 
-    # 장소/시설 키워드 제거
     df = df[df["키워드"].apply(is_valid_keyword)]
 
     kw50 = df.head(50)[["키워드", "구분", "지표"]]
     top10 = df.sort_values("지표", ascending=False).head(10)[["키워드", "구분", "지표"]]
 
-    return kw50, top10
+    return {
+        "status": "OK",
+        "kw50": kw50,
+        "top10": top10
+    }
+
 
 # -----------------------------
 # UI
@@ -148,18 +168,20 @@ if st.button("🚀 키워드 추천 및 분석하기"):
 
     with st.spinner("Google Trends 실제 검색 데이터 분석 중..."):
         for kw in keywords_to_try:
-            kw50, top10 = analyze_with_trends(kw)
+           result = analyze_with_trends(kw)
 
-            if kw50 == "RATE_LIMIT":
-                st.warning(
-                    f"⚠ '{kw}' 분석 중 요청 제한 발생.\n"
-                    "잠시 후 다시 시도하거나 더 구체적인 키워드를 사용하세요."
-                )
-                continue
+if result["status"] == "RATE_LIMIT":
+    st.warning(
+        f"⚠ '{kw}' 분석 중 Google Trends 요청 제한 발생\n"
+        "잠시 후 다시 시도하거나 더 구체적인 키워드를 입력하세요."
+    )
+    continue
 
-            if not kw50.empty:
-                all_kw50.append(kw50.assign(기준키워드=kw))
-                all_top10.append(top10.assign(기준키워드=kw))
+if result["status"] != "OK":
+    continue
+
+all_kw50.append(result["kw50"].assign(기준키워드=kw))
+all_top10.append(result["top10"].assign(기준키워드=kw))
 
     if not all_kw50:
         st.error("의미 있는 키워드를 가져오지 못했습니다.")
