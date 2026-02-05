@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
+from openai import OpenAI, RateLimitError, APIError, APITimeoutError, BadRequestError
 
 # =====================
 # 기본 설정
@@ -26,108 +27,7 @@ for key in [
 # =====================
 def analyze_keywords(base):
     suffixes = [
-        "주차", "위치", "가는법", "운영시간", "산책",
-        "사진 명소", "데이트", "가볼만한곳", "코스",
-        "야경", "혼잡도", "계절", "날씨", "아이와",
-        "혼자", "주말", "평일", "입장료", "지도",
-        "주변 맛집", "근처 카페", "전망", "힐링",
-        "자전거", "피크닉", "가족", "연인"
-    ]
-
-    rows = []
-    for s in suffixes:
-        kw = f"{base} {s}"
-        seo = 0
-        click = 0
-        ai = 0
-
-        if s in ["주차", "위치", "가는법", "운영시간"]:
-            seo += 40
-        if s in ["사진 명소", "데이트", "산책", "가볼만한곳"]:
-            click += 35
-        if len(kw) >= 10:
-            ai += 25
-
-        total = seo + click + ai
-        rows.append({
-            "키워드": kw,
-            "SEO 점수": seo,
-            "클릭 점수": click,
-            "AI 검색 점수": ai,
-            "총점": total
-        })
-
-    df = pd.DataFrame(rows).sort_values("총점", ascending=False)
-    top10 = df.head(10)
-
-    return df, top10
-
-# =====================
-# 입력 영역
-# =====================
-base_kw = st.text_input(
-    "분석할 키워드를 입력하세요",
-    placeholder="예: 전주 덕진공원"
-)
-
-if st.button("키워드 분석"):
-    if base_kw.strip():
-        df_all, df_top10 = analyze_keywords(base_kw.strip())
-        st.session_state.df_all = df_all
-        st.session_state.df_top10 = df_top10
-        st.session_state.selected_keywords = []
-        st.session_state.post_text = None
-
-# =====================
-# 1️⃣ 연관 키워드 50개 (작은 박스)
-# =====================
-if st.session_state.df_all is not None:
-    st.subheader("1️⃣ 키워드 분석 결과 (연관 키워드 50개)")
-    st.dataframe(
-        st.session_state.df_all[["키워드", "총점"]].head(50),
-        height=260,
-        use_container_width=True
-    )
-
-# =====================
-# 2️⃣ SEO·클릭·AI 최적 키워드 10개 (선택)
-# =====================
-if st.session_state.df_top10 is not None:
-    st.subheader("2️⃣ SEO·클릭·AI 검색 최적 키워드 10개")
-    st.caption("※ 글에 사용할 키워드를 직접 선택하세요")
-
-    selected = []
-    for _, row in st.session_state.df_top10.iterrows():
-        if st.checkbox(
-            f"{row['키워드']} (총점 {row['총점']})",
-            key=row["키워드"]
-        ):
-            selected.append(row["키워드"])
-
-    st.session_state.selected_keywords = selected
-
-# =====================
-# 3️⃣ 글 생성 버튼
-# =====================
-if st.session_state.selected_keywords:
-    st.markdown("---")
-    if st.button("선택한 키워드로 글 생성"):
-        st.session_state.run_generate = True
-
-# =====================
-# GPT 글 생성 (버튼 클릭 시 1회)
-# =====================
-if st.session_state.run_generate:
-    with st.spinner("네이버 블로그 글 생성 중..."):
-        kws = st.session_state.selected_keywords[:3]
-
-        prompt = f"""
-너는 네이버 블로그 전문 SEO 작가다.
-
-[대원칙]
-- 정보가 감정보다 먼저다
-- 처음 방문하는 사람 기준이다
-- 구조는 절대 바꾸지 않는다
+@@ -131,41 +131,56 @@ if st.session_state.run_generate:
 
 [주제]
 {base_kw}
@@ -153,6 +53,28 @@ if st.session_state.run_generate:
 - 감성 과장
 - 추상적 표현
 """
+        try:
+            res = client.responses.create(
+                model="gpt-4.1-mini",
+                input=prompt,
+                max_output_tokens=1200
+            )
+        except RateLimitError:
+            st.error(
+                "요청이 몰려 잠시 사용할 수 없어요. 1~2분 뒤 다시 시도해주세요."
+            )
+            res = None
+        except (APITimeoutError, APIError):
+            st.error(
+                "OpenAI 서버 연결에 문제가 있어요. 잠시 후 다시 시도해주세요."
+            )
+            res = None
+        except BadRequestError as exc:
+            st.error(f"요청 형식 오류가 발생했어요: {exc}")
+            res = None
+
+        if res is not None:
+            st.session_state.post_text = res.output_text
 
         res = client.responses.create(
             model="gpt-4.1-mini",
