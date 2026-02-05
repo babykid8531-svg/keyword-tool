@@ -54,10 +54,13 @@ if st.button("키워드 분석"):
     st.session_state.top3 = top3
     st.session_state.post = None
 
-if st.session_state.df is not None:
-    st.subheader("1️⃣ 키워드 분석 결과")
-    st.dataframe(st.session_state.df, use_container_width=True)
+st.subheader("1️⃣ 키워드 분석 결과 (연관 키워드 50개)")
 
+st.dataframe(
+    st.session_state.df,
+    use_container_width=True,
+    height=260  # ✅ 이게 핵심 (상자 높이)
+)
     st.subheader("2️⃣ SEO·클릭 최적 키워드")
     for i, kw in enumerate(st.session_state.top3, 1):
         st.write(f"{i}. {kw}")
